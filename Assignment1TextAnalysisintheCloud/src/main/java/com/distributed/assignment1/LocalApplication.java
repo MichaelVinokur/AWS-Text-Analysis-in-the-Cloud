@@ -104,6 +104,10 @@ public class LocalApplication {
             // else: bucket already exists → ignore
         }
         s3.putObject(PutObjectRequest.builder().bucket("MishaBucketFromBGU").key("inputFile").build(), URLFile.toPath());
+        //        S3Object ass1 = s3.getObject(GetObjectRequest.builder().bucket(“dsp251”).key(“ass1”).build());
+        //        s3.deleteObject(DeleteObjectRequest.builder().bucket(“dsp251”).key(“ass1”).build());
+        //        s3.deleteBucket(DeleteBucketRequest.builder().bucket(“dspp251”).build());
+        //        we will need this at the end to recieve the output file from the workers+manager
     }
 }
 
