@@ -1,14 +1,18 @@
 package com.distributed.assignment1;
 
 import java.io.File;
+import java.nio.file.Paths;
 import java.util.Base64;
 
 import software.amazon.awssdk.services.ec2.Ec2Client;
 import software.amazon.awssdk.services.ec2.model.*;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.CreateBucketRequest;
+import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
+import software.amazon.awssdk.services.sqs.SqsClient;
+import software.amazon.awssdk.services.sqs.model.*;
 
 public class LocalApplication {
     // function in order to check if there is a manager instance already
@@ -37,7 +41,7 @@ public class LocalApplication {
         return null; // no Manager found
     }
 
-    public static String CreateManager (Ec2Client ec2){
+    public static String createManager (Ec2Client ec2){
         RunInstancesRequest runRequest = RunInstancesRequest.builder()
                 .instanceType(InstanceType.T1_MICRO)
                 .imageId(amiId)
@@ -87,28 +91,60 @@ public class LocalApplication {
             System.out.println("File not found: " + filePath);
             System.exit(1);
         }
+        software.amazon.awssdk.regions.Region region = Region.US_EAST_1; // check region
+        String bucketName = "MishaBucketFromBGU";
 
-        Ec2Client ec2 = Ec2Client.create(); //creates a Java object (a client) that lets the program talk to the EC2 service
+        Ec2Client ec2 = Ec2Client.builder().region(region).build(); //creates a Java object (a client) that lets the program talk to the EC2 service
         String managerId = findActiveManager(ec2);
         if(managerId == null) {
-            managerId = CreateManager(ec2);
+            managerId = createManager(ec2);
         }
 
-        S3Client s3 = S3Client.builder().region(Region.US_WEST_2).build(); // check region
+        S3Client s3 = S3Client.builder().region(region).build();
         try {
-            s3.createBucket(CreateBucketRequest.builder().bucket("MishaBucketFromBGU").build()); // bucket name needs to be unique
+            s3.createBucket(CreateBucketRequest.builder().bucket(bucketName).build()); // bucket name needs to be unique and have unique name or else crash
         }catch (S3Exception e) {
             if (!e.awsErrorDetails().errorCode().equals("BucketAlreadyOwnedByYou")) {
                 throw e;  // real error → rethrow
             }
             // else: bucket already exists → ignore
         }
-        s3.putObject(PutObjectRequest.builder().bucket("MishaBucketFromBGU").key("inputFile").build(), URLFile.toPath());
-        //        S3Object ass1 = s3.getObject(GetObjectRequest.builder().bucket(“dsp251”).key(“ass1”).build());
-        //        s3.deleteObject(DeleteObjectRequest.builder().bucket(“dsp251”).key(“ass1”).build());
-        //        s3.deleteBucket(DeleteBucketRequest.builder().bucket(“dspp251”).build());
-        //        we will need this at the end to recieve the output file from the workers+manager
+        s3.putObject(PutObjectRequest.builder().bucket(bucketName).key("inputFile").build(), URLFile.toPath()); // creates S3 input of the file with value - bucketname and key.
+
+        SqsClient sqs = SqsClient.builder().region(region).build();
+        //outputQueue
+        CreateQueueRequest queueReqLTM = CreateQueueRequest.builder().queueName("LocalToManagerQueue").build();
+        CreateQueueResponse queueLTM = sqs.createQueue(queueReqLTM);// creating the queue
+        String queueUrl = queueLTM.queueUrl(); // unique URL to indetify the queue.
+        sqs.sendMessage(SendMessageRequest.builder().queueUrl(queueUrl).messageBody( bucketName + " inputFile " + Filelimit).build());
+
+        //inputQueue
+        CreateQueueRequest queueReqMTL = CreateQueueRequest.builder().queueName("ManagerToLocalQueue").build();
+        CreateQueueResponse queueMTL = sqs.createQueue(queueReqMTL);// creating the queue
+        String returnQueueUrl = queueMTL.queueUrl(); // unique URL to indetify the queue.
+        while(true){
+            ReceiveMessageResponse response = sqs.receiveMessage(ReceiveMessageRequest.builder().queueUrl(returnQueueUrl)
+                    .maxNumberOfMessages(1).waitTimeSeconds(10).build()); //waiting to recieve from the manager the end file
+
+            if(!response.messages().isEmpty()){
+                String[] parts = response.messages().get(0).body().split(" ");
+                String outBucket = parts[0];
+                String outKey = parts[1];
+                s3.getObject(GetObjectRequest.builder().bucket(outBucket).key(outKey).build(), Paths.get("output.html"));// downloads the object from s3 + saves the file to the computer
+                sqs.deleteMessage(DeleteMessageRequest.builder().queueUrl(returnQueueUrl).receiptHandle(response.messages().get(0).receiptHandle()).build());
+                break;
+            }
+            try {
+                Thread.sleep(3000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                break;
+            }
+        }
+
     }
 }
 
 // we cant create two buckets because the second one will crush so we handle this with try catch.
+// also we create 2 queus to handle the situation of more then one localApp so that in case of one queue any local app can read messeges meant for diffrenet LocalApp (even with 2 queues we need to handle this case even more deeply)
+//queus are better for the meneger to be able to read from one specific queue. and of course the case where the Local App reads its own massage which is bad.
