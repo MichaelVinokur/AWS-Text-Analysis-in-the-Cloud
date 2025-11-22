@@ -86,8 +86,8 @@ public class LocalApplication {
         String filePath = args[0];
         int Filelimit = Integer.parseInt(args[1]); // an integer stating how many files a single worker can analyze
         //args[3]
-        File URLFile = new File(filePath);
-        if (!URLFile.exists()) {
+        File inputFile = new File(filePath);
+        if (!inputFile.exists()) {
             System.out.println("File not found: " + filePath);
             System.exit(1);
         }
@@ -109,14 +109,14 @@ public class LocalApplication {
             }
             // else: bucket already exists → ignore
         }
-        s3.putObject(PutObjectRequest.builder().bucket(bucketName).key("inputFile").build(), URLFile.toPath()); // creates S3 input of the file with value - bucketname and key.
+        s3.putObject(PutObjectRequest.builder().bucket(bucketName).key("inputFile").build(), inputFile.toPath()); // creates S3 input of the file with value - bucketname and key.
 
         SqsClient sqs = SqsClient.builder().region(region).build();
         //outputQueue
-        CreateQueueRequest queueReqLTM = CreateQueueRequest.builder().queueName("LocalToManagerQueue").build();
+        CreateQueueRequest queueReqLTM = CreateQueueRequest.builder().queueName("LocalToManagerQueue").build(); // requst to create LocalToManagerQueue
         CreateQueueResponse queueLTM = sqs.createQueue(queueReqLTM);// creating the queue
         String queueUrl = queueLTM.queueUrl(); // unique URL to indetify the queue.
-        sqs.sendMessage(SendMessageRequest.builder().queueUrl(queueUrl).messageBody( bucketName + " inputFile " + Filelimit).build());
+        sqs.sendMessage(SendMessageRequest.builder().queueUrl(queueUrl).messageBody( "FileInBucket " + bucketName + " inputFile " + Filelimit).build());
 
         //inputQueue
         CreateQueueRequest queueReqMTL = CreateQueueRequest.builder().queueName("ManagerToLocalQueue").build();
