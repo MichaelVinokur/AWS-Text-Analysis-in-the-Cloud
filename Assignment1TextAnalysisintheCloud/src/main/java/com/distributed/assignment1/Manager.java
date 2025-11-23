@@ -1,5 +1,5 @@
 package com.distributed.assignment1;
-
+import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.ec2.Ec2Client;
 import software.amazon.awssdk.services.ec2.model.*;
 import software.amazon.awssdk.services.s3.S3Client;
@@ -59,13 +59,19 @@ public class Manager {
     }
 
     public static void createWorkers (Ec2Client ec2 , int n){
+        String workerUserData =
+                "#!/bin/bash\n" +
+                        "yum update -y\n" +
+                        "yum install -y java-17-amazon-corretto-headless\n" +
+                        "aws s3 cp s3://my-bucket-bguproject/worker.jar /home/ec2-user/worker.jar\n" +
+                        "java -jar /home/ec2-user/worker.jar > /home/ec2-user/worker.log 2>&1 &\n";
         while(n>0) {
             RunInstancesRequest runRequest = RunInstancesRequest.builder()
                     .instanceType(InstanceType.T1_MICRO)
                     .imageId(amiId)
                     .maxCount(1)
                     .minCount(1)
-                    .userData(Base64.getEncoder().encodeToString(/*your USER DATA script string*/.getBytes()))
+                    .userData(Base64.getEncoder().encodeToString(workerUserData.getBytes()))
                 .build();
 
             RunInstancesResponse response = ec2.runInstances(runRequest); // asks AWS to launch a new EC2 instance
@@ -117,7 +123,7 @@ public class Manager {
 
     public static void main(String[] args) {
         boolean termianteReq = false;
-        software.amazon.awssdk.regions.Region region = Region.US_EAST_1;
+        Region region = Region.US_EAST_1;
         Ec2Client ec2 = Ec2Client.builder().region(region).build(); // in order to talk to the EC2 services we need EC@ client here as well
         SqsClient sqs = SqsClient.builder().region(region).build();
         S3Client s3 = S3Client.builder().region(region).build();

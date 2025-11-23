@@ -3,7 +3,7 @@ package com.distributed.assignment1;
 import java.io.File;
 import java.nio.file.Paths;
 import java.util.Base64;
-
+import software.amazon.awssdk.regions.Region;
 import software.amazon.awssdk.services.ec2.Ec2Client;
 import software.amazon.awssdk.services.ec2.model.*;
 import software.amazon.awssdk.services.s3.S3Client;
@@ -42,12 +42,18 @@ public class LocalApplication {
     }
 
     public static String createManager (Ec2Client ec2){
+        String managerUserData =
+                "#!/bin/bash\n" +
+                        "yum update -y\n" +
+                        "yum install -y java-17-amazon-corretto-headless\n" +
+                        "aws s3 cp s3://my-bucket-bguproject/manager.jar /home/ec2-user/manager.jar\n" +
+                        "java -jar /home/ec2-user/manager.jar > /home/ec2-user/manager.log 2>&1 &\n";
         RunInstancesRequest runRequest = RunInstancesRequest.builder()
                 .instanceType(InstanceType.T1_MICRO)
                 .imageId(amiId)
                 .maxCount(1)
                 .minCount(1)
-                .userData(Base64.getEncoder().encodeToString(/*your USER DATA script string*/.getBytes()))
+                .userData(Base64.getEncoder().encodeToString(managerUserData.getBytes()))
                 .build();
 
         RunInstancesResponse response = ec2.runInstances(runRequest); // asks AWS to launch a new EC2 instance
@@ -91,7 +97,7 @@ public class LocalApplication {
             System.out.println("File not found: " + filePath);
             System.exit(1);
         }
-        software.amazon.awssdk.regions.Region region = Region.US_EAST_1; // check region
+        Region region = Region.US_EAST_1; // check region
         String bucketName = "MishaBucketFromBGU";
 
         Ec2Client ec2 = Ec2Client.builder().region(region).build(); //creates a Java object (a client) that lets the program talk to the EC2 service
