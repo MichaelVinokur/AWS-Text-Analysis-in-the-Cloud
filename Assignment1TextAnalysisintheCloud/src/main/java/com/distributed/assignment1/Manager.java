@@ -4,13 +4,16 @@ import software.amazon.awssdk.services.ec2.Ec2Client;
 import software.amazon.awssdk.services.ec2.model.*;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
+import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.sqs.SqsClient;
 import software.amazon.awssdk.services.sqs.model.*;
-
 import java.io.*;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.List;
 import java.util.Objects;
 
 public class Manager {
@@ -83,6 +86,34 @@ public class Manager {
         }
     }
 
+    public static void createOutPut(int expected, String WTMurl, SqsClient sqs, S3Client s3, String bucket, String key){
+        int recieved = 0;
+        List<String> results = new ArrayList<>();
+        while( recieved < expected){
+            ReceiveMessageResponse res = sqs.receiveMessage(ReceiveMessageRequest.builder().queueUrl(WTMurl).maxNumberOfMessages(1) //The receipt handle is like a delete token for an SQS message.
+                    .waitTimeSeconds(5).build());
+            if (!res.hasMessages()) {
+                continue;
+            }
+            results.add(res.messages().get(0).body());
+            recieved++;
+            sqs.deleteMessage(DeleteMessageRequest.builder().queueUrl(WTMurl).receiptHandle(res.messages().get(0).receiptHandle()).build());
+        }
+        Path summaryPath = Paths.get("summary.html");
+        try(BufferedWriter w = Files.newBufferedWriter(summaryPath)){
+            w.write("<html><body>\n");
+            for (String line : results) {
+                w.write(line);
+                w.write("<br/>\n");
+            }
+            w.write("</body></html>\n");
+        }catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+        s3.putObject(PutObjectRequest.builder().bucket(bucket).key(key).build(),
+                summaryPath
+        );
+    }
 
     public static void main(String[] args) {
         boolean termianteReq = false;
@@ -96,15 +127,19 @@ public class Manager {
         );
         String requestQueueUrl = q.queueUrl();
         CreateQueueRequest queueReqMTW = CreateQueueRequest.builder().queueName("ManagerToWorker").build();
-        CreateQueueResponse queueMTL = sqs.createQueue(queueReqMTW);// creating the queue
-        String manager2workerURL = queueMTL.queueUrl(); // unique URL to indetify the queue.
+        CreateQueueResponse queueMTW = sqs.createQueue(queueReqMTW);// creating the queue
+        String manager2workerURL = queueMTW.queueUrl(); // unique URL to indetify the queue.
+
+        CreateQueueRequest queueReqWTM = CreateQueueRequest.builder().queueName("ManagerToWorker").build();
+        CreateQueueResponse queueWTM = sqs.createQueue(queueReqWTM);// creating the queue
+        String Worker2ManagerURL = queueWTM.queueUrl(); // unique URL to indetify the queue.
 
         while(termianteReq == false){
             ReceiveMessageResponse res = sqs.receiveMessage(ReceiveMessageRequest.builder().queueUrl(requestQueueUrl).maxNumberOfMessages(1) //The receipt handle is like a delete token for an SQS message.
                     .waitTimeSeconds(10).build()
-            ); // cretaing the request how to pull from the queue
+            ); // creating the request how to pull from the queue
             if(!res.hasMessages()){
-               //loop logic - todo
+               continue;
             }
             String bodyOfM = res.messages().get(0).body(); // the first messege of the queue; also add handaling for terminate.
             String [] parts = bodyOfM.split(" ");
@@ -120,8 +155,9 @@ public class Manager {
                 int workersAtMoment = countWorkers(ec2);
                 int missingWorkers = (taskCount + limitOfWorkers -1)/limitOfWorkers; // numbers of lines in the file / limit per worker (rounded up).
                 int toLaunch = Math.max(0, missingWorkers - workersAtMoment);
-                toLaunch = Math.min(toLaunch, 17 - workersAtMoment);// limit is 19 but we will do 17 for any case
+                toLaunch = Math.min(toLaunch, 16 - workersAtMoment);// limit is 19 but we will do 16 for any case
                 createWorkers(ec2 , toLaunch);
+                createOutPut(taskCount,Worker2ManagerURL,sqs,s3,bucket,"summary.html");
             }
             else{
                 termianteReq = true;

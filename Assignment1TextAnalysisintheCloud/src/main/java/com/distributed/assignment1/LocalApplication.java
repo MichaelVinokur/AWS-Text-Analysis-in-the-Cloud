@@ -84,7 +84,7 @@ public class LocalApplication {
             System.exit(1);
         }
         String filePath = args[0];
-        int Filelimit = Integer.parseInt(args[1]); // an integer stating how many files a single worker can analyze
+        int Filelimit = Integer.parseInt(args[1]); // (n) an integer stating how many files a single worker can analyze
         //args[3]
         File inputFile = new File(filePath);
         if (!inputFile.exists()) {
@@ -135,13 +135,13 @@ public class LocalApplication {
                 break;
             }
             try {
-                Thread.sleep(3000);
+                Thread.sleep(3000); // maybe not relvent
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 break;
             }
         }
-
+        //need terminate logic
     }
 }
 
