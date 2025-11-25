@@ -3,7 +3,9 @@ package com.distributed.assignment1;
 import java.io.File;
 import java.nio.file.Paths;
 import java.util.Base64;
-import software.amazon.awssdk.regions.Region;
+import java.util.UUID;
+
+
 import software.amazon.awssdk.services.ec2.Ec2Client;
 import software.amazon.awssdk.services.ec2.model.*;
 import software.amazon.awssdk.services.s3.S3Client;
@@ -13,6 +15,9 @@ import software.amazon.awssdk.services.s3.model.PutObjectRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.sqs.SqsClient;
 import software.amazon.awssdk.services.sqs.model.*;
+
+import software.amazon.awssdk.regions.Region;
+
 
 public class LocalApplication {
     // function in order to check if there is a manager instance already
@@ -91,13 +96,13 @@ public class LocalApplication {
         }
         String filePath = args[0];
         int Filelimit = Integer.parseInt(args[1]); // (n) an integer stating how many files a single worker can analyze
-        //args[3]
+        boolean terminateMode = (args.length == 3 && args[2].equalsIgnoreCase("terminate"));
         File inputFile = new File(filePath);
         if (!inputFile.exists()) {
             System.out.println("File not found: " + filePath);
             System.exit(1);
         }
-        Region region = Region.US_EAST_1; // check region
+        software.amazon.awssdk.regions.Region region = Region.US_EAST_1; // check region
         String bucketName = "MishaBucketFromBGU";
 
         Ec2Client ec2 = Ec2Client.builder().region(region).build(); //creates a Java object (a client) that lets the program talk to the EC2 service
@@ -118,16 +123,15 @@ public class LocalApplication {
         s3.putObject(PutObjectRequest.builder().bucket(bucketName).key("inputFile").build(), inputFile.toPath()); // creates S3 input of the file with value - bucketname and key.
 
         SqsClient sqs = SqsClient.builder().region(region).build();
+        //inputQueue
+        CreateQueueRequest queueReqMTL = CreateQueueRequest.builder().queueName("ManagerToLocalQueue-" + UUID.randomUUID()).build(); // so the manager will know to which local to talk
+        CreateQueueResponse queueMTL = sqs.createQueue(queueReqMTL);// creating the queue
+        String returnQueueUrl = queueMTL.queueUrl(); // unique URL to indetify the queue.
         //outputQueue
         CreateQueueRequest queueReqLTM = CreateQueueRequest.builder().queueName("LocalToManagerQueue").build(); // requst to create LocalToManagerQueue
         CreateQueueResponse queueLTM = sqs.createQueue(queueReqLTM);// creating the queue
         String queueUrl = queueLTM.queueUrl(); // unique URL to indetify the queue.
-        sqs.sendMessage(SendMessageRequest.builder().queueUrl(queueUrl).messageBody( "FileInBucket " + bucketName + " inputFile " + Filelimit).build());
-
-        //inputQueue
-        CreateQueueRequest queueReqMTL = CreateQueueRequest.builder().queueName("ManagerToLocalQueue").build();
-        CreateQueueResponse queueMTL = sqs.createQueue(queueReqMTL);// creating the queue
-        String returnQueueUrl = queueMTL.queueUrl(); // unique URL to indetify the queue.
+        sqs.sendMessage(SendMessageRequest.builder().queueUrl(queueUrl).messageBody( "NEW_TASK " + bucketName + " " + "inputFile" + " " + Filelimit + " " + returnQueueUrl).build());
         while(true){
             ReceiveMessageResponse response = sqs.receiveMessage(ReceiveMessageRequest.builder().queueUrl(returnQueueUrl)
                     .maxNumberOfMessages(1).waitTimeSeconds(10).build()); //waiting to recieve from the manager the end file
@@ -147,7 +151,9 @@ public class LocalApplication {
                 break;
             }
         }
-        //need terminate logic
+        if (terminateMode) {// send a TERMINATE command to the manager
+            sqs.sendMessage(SendMessageRequest.builder().queueUrl(queueUrl).messageBody("TERMINATE").build());
+        }
     }
 }
 
