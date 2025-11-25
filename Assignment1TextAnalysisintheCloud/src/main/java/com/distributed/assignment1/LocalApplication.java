@@ -20,6 +20,10 @@ import software.amazon.awssdk.regions.Region;
 
 
 public class LocalApplication {
+
+    private static final String amiId = "ami-0fa3fe0fa7920f68e";
+
+
     // function in order to check if there is a manager instance already
     private static String findActiveManager(Ec2Client ec2) {
         Filter nameFilter = Filter.builder()
@@ -51,8 +55,9 @@ public class LocalApplication {
                 "#!/bin/bash\n" +
                         "yum update -y\n" +
                         "yum install -y java-17-amazon-corretto-headless\n" +
-                        "aws s3 cp s3://my-bucket-bguproject/manager.jar /home/ec2-user/manager.jar\n" +
+                        "aws s3 cp s3://mtmv-bguproject/manager.jar /home/ec2-user/manager.jar\n" +
                         "java -jar /home/ec2-user/manager.jar > /home/ec2-user/manager.log 2>&1 &\n";
+
         RunInstancesRequest runRequest = RunInstancesRequest.builder()
                 .instanceType(InstanceType.T1_MICRO)
                 .imageId(amiId)
@@ -94,6 +99,7 @@ public class LocalApplication {
                     "terminate message to the Manager.");
             System.exit(1);
         }
+        System.out.println("DEBUG: Local application started");
         String filePath = args[0];
         int Filelimit = Integer.parseInt(args[1]); // (n) an integer stating how many files a single worker can analyze
         boolean terminateMode = (args.length == 3 && args[2].equalsIgnoreCase("terminate"));
@@ -103,7 +109,7 @@ public class LocalApplication {
             System.exit(1);
         }
         software.amazon.awssdk.regions.Region region = Region.US_EAST_1; // check region
-        String bucketName = "MishaBucketFromBGU";
+        String bucketName = "mtmv-bguproject";
 
         Ec2Client ec2 = Ec2Client.builder().region(region).build(); //creates a Java object (a client) that lets the program talk to the EC2 service
         String managerId = findActiveManager(ec2);
@@ -114,6 +120,7 @@ public class LocalApplication {
         S3Client s3 = S3Client.builder().region(region).build();
         try {
             s3.createBucket(CreateBucketRequest.builder().bucket(bucketName).build()); // bucket name needs to be unique and have unique name or else crash
+            System.out.println("DEBUG: bucket created");
         }catch (S3Exception e) {
             if (!e.awsErrorDetails().errorCode().equals("BucketAlreadyOwnedByYou")) {
                 throw e;  // real error → rethrow
@@ -133,6 +140,7 @@ public class LocalApplication {
         String queueUrl = queueLTM.queueUrl(); // unique URL to indetify the queue.
         sqs.sendMessage(SendMessageRequest.builder().queueUrl(queueUrl).messageBody( "NEW_TASK " + bucketName + " " + "inputFile" + " " + Filelimit + " " + returnQueueUrl).build());
         while(true){
+            System.out.println("DEBUG: In queue loop");
             ReceiveMessageResponse response = sqs.receiveMessage(ReceiveMessageRequest.builder().queueUrl(returnQueueUrl)
                     .maxNumberOfMessages(1).waitTimeSeconds(10).build()); //waiting to recieve from the manager the end file
 

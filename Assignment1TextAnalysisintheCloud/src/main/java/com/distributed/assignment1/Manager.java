@@ -18,6 +18,8 @@ import java.util.Objects;
 
 public class Manager {
 
+    private static final String amiId = "ami-0fa3fe0fa7920f68e";
+
     public static int fileParser(String filePath , String queue, SqsClient sqs){
         int taskCount=0;
         try(BufferedReader reader = new BufferedReader(new FileReader(filePath))){
@@ -63,7 +65,7 @@ public class Manager {
                 "#!/bin/bash\n" +
                         "yum update -y\n" +
                         "yum install -y java-17-amazon-corretto-headless\n" +
-                        "aws s3 cp s3://my-bucket-bguproject/worker.jar /home/ec2-user/worker.jar\n" +
+                        "aws s3 cp s3://mtmv-bguproject/worker.jar /home/ec2-user/worker.jar\n" +
                         "java -jar /home/ec2-user/worker.jar > /home/ec2-user/worker.log 2>&1 &\n";
         while(n>0) {
             RunInstancesRequest runRequest = RunInstancesRequest.builder()
@@ -142,10 +144,30 @@ public class Manager {
                         .receiptHandle(m.receiptHandle())
                         .build());
             }
-            results.add(res.messages().get(0).body());
-            recieved++;
-            sqs.deleteMessage(DeleteMessageRequest.builder().queueUrl(WTMurl).receiptHandle(res.messages().get(0).receiptHandle()).build());
         }
+
+//        while (received < expected) {
+//            ReceiveMessageResponse res =
+//                    sqs.receiveMessage(ReceiveMessageRequest.builder()
+//                            .queueUrl(worker2managerURL)
+//                            .maxNumberOfMessages(1)
+//                            .waitTimeSeconds(10)
+//                            .build());
+//
+//            if (res.hasMessages()) {
+//                Message m = res.messages().get(0);
+//                results.add(m.body());
+//                received++;
+//
+//                sqs.deleteMessage(DeleteMessageRequest.builder()
+//                        .queueUrl(worker2managerURL)
+//                        .receiptHandle(m.receiptHandle())
+//                        .build());
+//            }
+//            results.add(res.messages().get(0).body());
+//            received++;
+//            sqs.deleteMessage(DeleteMessageRequest.builder().queueUrl(worker2managerURL).receiptHandle(res.messages().get(0).receiptHandle()).build());
+//        }
 
         // Build summary HTML
         Path summaryPath = Paths.get("summary.html");
@@ -192,6 +214,7 @@ public class Manager {
     }
 
     public static void main(String[] args) {
+        System.out.println("DEBUG: Manager started");
         boolean termianteReq = false;
         Region region = Region.US_EAST_1;
         Ec2Client ec2 = Ec2Client.builder().region(region).build(); // in order to talk to the EC2 services we need EC@ client here as well
@@ -209,6 +232,7 @@ public class Manager {
         String Worker2ManagerURL = queueWTM.queueUrl(); // unique URL to indetify the queue.
 
         while(!termianteReq){
+            System.out.println("DEBUG: In manager loop");
             ReceiveMessageResponse res = sqs.receiveMessage(ReceiveMessageRequest.builder().queueUrl(requestQueueUrl).maxNumberOfMessages(1) //The receipt handle is like a delete token for an SQS message.
                     .waitTimeSeconds(10).build()
             ); // creating the request how to pull from the queue
