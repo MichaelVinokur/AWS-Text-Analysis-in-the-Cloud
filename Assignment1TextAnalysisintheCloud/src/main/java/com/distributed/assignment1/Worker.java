@@ -25,12 +25,14 @@ import java.io.InputStreamReader;
 import java.io.StringReader;
 import java.net.URL;
 import java.util.List;
+import java.util.UUID;
+import java.util.concurrent.*;
 
 
 public class Worker {
 
     private static final Region REGION = Region.US_EAST_1;
-    private static final String BUCKET = "MishaBucketFromBGU";
+    private static final String BUCKET = "mtmv-bguproject";
 
     //(slow!)
     private static final LexicalizedParser PARSER =
@@ -40,27 +42,57 @@ public class Worker {
             PTBTokenizer.factory(new CoreLabelTokenFactory(), "");  //creates a reusable tokenizer
 
     public static void main(String[] args) {
+        System.out.println("DEBUG: Worker loop iteration. Waiting for messages...");
         S3Client s3 = S3Client.builder().region(REGION).build();
         SqsClient sqs = SqsClient.builder().region(REGION).build();
         String taskQueueUrl = sqs.getQueueUrl(GetQueueUrlRequest.builder().queueName("ManagerToWorker").build()).queueUrl();
         String resultQueueUrl = sqs.getQueueUrl(GetQueueUrlRequest.builder().queueName("WorkerToManager").build()).queueUrl();
 
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+
         while (true) {
-            ReceiveMessageResponse resp = sqs.receiveMessage(ReceiveMessageRequest.builder().queueUrl(taskQueueUrl).maxNumberOfMessages(1).waitTimeSeconds(20).build());
+            ReceiveMessageResponse resp = sqs.receiveMessage(ReceiveMessageRequest.builder().queueUrl(taskQueueUrl).maxNumberOfMessages(1).waitTimeSeconds(20).visibilityTimeout(30).build());
             for (Message msg : resp.messages()) {
                 String body = msg.body();
+                System.out.println("DEBUG: Processing message: " + msg.body());
                 try {
-                    String[] parts = body.split("\\t", 2);
+                    String[] parts = body.split("\\s+", 2);
+                    if (parts.length < 2) {
+                        System.err.println("DEBUG ERROR: Invalid message format (missing URL): " + body);
+                        sqs.deleteMessage(DeleteMessageRequest.builder().queueUrl(taskQueueUrl).receiptHandle(msg.receiptHandle()).build());
+                        continue;
+                    }
                     String analysisType = parts[0];
                     String url = parts[1];
-                    String text = downloadText(url);
-                    String analyzed = performAnalysis(text, analysisType);
-                    String key = "results/" + System.currentTimeMillis() + ".txt";
+                    Future<String> future = executor.submit(() -> {
+                        String text = downloadText(url);
+                        System.out.println("DEBUG: Downloaded text. Length: " + text.length());
+                        return performAnalysis(text, analysisType);
+                    });
+                    String analyzed = null;
+                    while (analyzed == null) {
+                        try {
+                            analyzed = future.get(10, TimeUnit.SECONDS);
+                        } catch (TimeoutException e) {
+                            System.out.println("DEBUG: Extending visibility for " + url);
+                            sqs.changeMessageVisibility(ChangeMessageVisibilityRequest.builder()
+                                    .queueUrl(taskQueueUrl)
+                                    .receiptHandle(msg.receiptHandle())
+                                    .visibilityTimeout(30) // הארכה ב-30 שניות נוספות
+                                    .build());
+                        }
+                    }
+                    System.out.println("DEBUG: Analysis complete.");
+
+                    String key = "results/" + UUID.randomUUID() + ".txt";
+
                     s3.putObject(PutObjectRequest.builder().bucket(BUCKET).key(key).build(), RequestBody.fromString(analyzed));
                     String resultMsg = analysisType + " " + url + " " + BUCKET + " " + key;
                     sqs.sendMessage(SendMessageRequest.builder().queueUrl(resultQueueUrl).messageBody(resultMsg).build());
                     sqs.deleteMessage(DeleteMessageRequest.builder().queueUrl(taskQueueUrl).receiptHandle(msg.receiptHandle()).build());
+                    System.out.println("DEBUG: Task finished successfully.");
                 } catch (Exception e) {
+                    System.err.println("DEBUG ERROR: Worker crashed processing message.");
                     String errorMsg = body + " ERROR " + e.getClass().getSimpleName();
                     sqs.sendMessage(SendMessageRequest.builder().queueUrl(resultQueueUrl).messageBody(errorMsg).build());
                     sqs.deleteMessage(DeleteMessageRequest.builder().queueUrl(taskQueueUrl).receiptHandle(msg.receiptHandle()).build());
@@ -81,14 +113,6 @@ public class Worker {
         return sb.toString();
     }
 
-//    private static String performAnalysisDummy(String text, String analysisType) {
-//        // Just mark the type and return the original text.
-//        // Later you will replace this with the real Stanford analysis.
-//        StringBuilder sb = new StringBuilder();
-//        sb.append("ANALYSIS_TYPE=").append(analysisType).append("\n\n");
-//        sb.append(text);
-//        return sb.toString();
-//    }
     private static String performAnalysis(String text, String analysisType) throws Exception {
     StringBuilder out = new StringBuilder();
     String[] lines = text.split("\\R+");// Split text into lines so we don’t crash on long files

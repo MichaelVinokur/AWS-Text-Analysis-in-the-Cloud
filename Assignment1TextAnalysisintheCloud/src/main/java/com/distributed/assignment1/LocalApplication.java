@@ -50,29 +50,36 @@ public class LocalApplication {
         return null; // no Manager found
     }
 
-    public static String createManager (Ec2Client ec2){
+    public static String createManager(Ec2Client ec2) {
+        // 1. הסקריפט המתוקן עם המתנה של 30 שניות
         String managerUserData =
                 "#!/bin/bash\n" +
+                        "echo 'Starting initialization...' > /home/ec2-user/debug.log\n" +
+                        "sleep 30\n" +  // נותן למערכת זמן להתחבר לאינטרנט
                         "yum update -y\n" +
                         "yum install -y java-17-amazon-corretto-headless\n" +
                         "aws s3 cp s3://mtmv-bguproject/manager.jar /home/ec2-user/manager.jar\n" +
-                        "java -jar /home/ec2-user/manager.jar > /home/ec2-user/manager.log 2>&1 &\n";
+                        "echo 'Download finished, starting Java...' >> /home/ec2-user/debug.log\n" +
+                        "java -cp /home/ec2-user/manager.jar com.distributed.assignment1.Manager > /home/ec2-user/manager.log 2>&1 &\\n";
+
+        // 2. הגדרת הפרופיל (IAM) - לפי השם שמצאנו בתמונה שלך
+        IamInstanceProfileSpecification iamProfile = IamInstanceProfileSpecification.builder()
+                .name("LabInstanceProfile")
+                .build();
 
         RunInstancesRequest runRequest = RunInstancesRequest.builder()
-                .instanceType(InstanceType.T1_MICRO)
+                .instanceType(InstanceType.T2_MICRO)
                 .imageId(amiId)
                 .maxCount(1)
                 .minCount(1)
+                .iamInstanceProfile(iamProfile) // <--- התיקון החשוב ביותר: בלי זה אין גישה ל-S3
                 .userData(Base64.getEncoder().encodeToString(managerUserData.getBytes()))
                 .build();
 
-        RunInstancesResponse response = ec2.runInstances(runRequest); // asks AWS to launch a new EC2 instance
+        RunInstancesResponse response = ec2.runInstances(runRequest);
         String instanceId = response.instances().get(0).instanceId();
-        Tag tag = Tag.builder()
-                .key("Name")
-                .value("Manager")
-                .build();
 
+        Tag tag = Tag.builder().key("Name").value("Manager").build();
         CreateTagsRequest tagRequest = CreateTagsRequest.builder()
                 .resources(instanceId)
                 .tags(tag)
@@ -80,10 +87,7 @@ public class LocalApplication {
 
         try {
             ec2.createTags(tagRequest);
-            System.out.printf(
-                    "Successfully started EC2 instance manager based on AMI %s",
-                    instanceId, amiId);
-
+            System.out.printf("Successfully started Manager: %s%n", instanceId);
         } catch (Ec2Exception e) {
             System.err.println(e.getMessage());
             System.exit(1);
@@ -92,20 +96,19 @@ public class LocalApplication {
     }
 
     public static void main(String[] args) {
-        if (args.length < 2 || args.length > 3) {
-            System.out.println("Wrong input, please provide - an  input a file with URLs of text files together with the required text analysis,\n" +
-                    " an integer n stating how many files a single worker can analyze,\n" +
-                    "and an optional argument which indicates the behaviour in case the local application sends a\n" +
-                    "terminate message to the Manager.");
+        if (args.length < 3) {
+            System.out.println("Usage: java -jar yourjar.jar inputFileName outputFileName n [terminate]");
             System.exit(1);
         }
         System.out.println("DEBUG: Local application started");
-        String filePath = args[0];
-        int Filelimit = Integer.parseInt(args[1]); // (n) an integer stating how many files a single worker can analyze
-        boolean terminateMode = (args.length == 3 && args[2].equalsIgnoreCase("terminate"));
-        File inputFile = new File(filePath);
+        String inputFileName = args[0];
+        String outputFileName = args[1]; // The name for the resulting HTML file
+        int n = Integer.parseInt(args[2]); // Files per worker ratio
+        boolean terminateMode = (args.length > 3 && args[3].equalsIgnoreCase("terminate"));
+
+        File inputFile = new File(inputFileName);
         if (!inputFile.exists()) {
-            System.out.println("File not found: " + filePath);
+            System.out.println("File not found: " + inputFileName);
             System.exit(1);
         }
         software.amazon.awssdk.regions.Region region = Region.US_EAST_1; // check region
@@ -127,7 +130,9 @@ public class LocalApplication {
             }
             // else: bucket already exists → ignore
         }
-        s3.putObject(PutObjectRequest.builder().bucket(bucketName).key("inputFile").build(), inputFile.toPath()); // creates S3 input of the file with value - bucketname and key.
+        String fixedKey = "input-file";
+        System.out.println("DEBUG: Uploading file to S3 as key: " + fixedKey);
+        s3.putObject(PutObjectRequest.builder().bucket(bucketName).key(fixedKey).build(), inputFile.toPath()); // creates S3 input of the file with value - bucketname and key.
 
         SqsClient sqs = SqsClient.builder().region(region).build();
         //inputQueue
@@ -138,18 +143,22 @@ public class LocalApplication {
         CreateQueueRequest queueReqLTM = CreateQueueRequest.builder().queueName("LocalToManagerQueue").build(); // requst to create LocalToManagerQueue
         CreateQueueResponse queueLTM = sqs.createQueue(queueReqLTM);// creating the queue
         String queueUrl = queueLTM.queueUrl(); // unique URL to indetify the queue.
-        sqs.sendMessage(SendMessageRequest.builder().queueUrl(queueUrl).messageBody( "NEW_TASK " + bucketName + " " + "inputFile" + " " + Filelimit + " " + returnQueueUrl).build());
+
+        sqs.sendMessage(SendMessageRequest.builder().queueUrl(queueUrl).messageBody( "NEW_TASK " + bucketName + " " + fixedKey + " " + n + " " + returnQueueUrl).build());
+        System.out.println("DEBUG: Task sent to manager. Waiting for results...");
         while(true){
-            System.out.println("DEBUG: In queue loop");
             ReceiveMessageResponse response = sqs.receiveMessage(ReceiveMessageRequest.builder().queueUrl(returnQueueUrl)
-                    .maxNumberOfMessages(1).waitTimeSeconds(10).build()); //waiting to recieve from the manager the end file
+                    .maxNumberOfMessages(1).waitTimeSeconds(20).build()); //waiting to recieve from the manager the end file
 
             if(!response.messages().isEmpty()){
                 String[] parts = response.messages().get(0).body().split(" ");
                 String outBucket = parts[0];
                 String outKey = parts[1];
-                s3.getObject(GetObjectRequest.builder().bucket(outBucket).key(outKey).build(), Paths.get("output.html"));// downloads the object from s3 + saves the file to the computer
-                sqs.deleteMessage(DeleteMessageRequest.builder().queueUrl(returnQueueUrl).receiptHandle(response.messages().get(0).receiptHandle()).build());
+
+                System.out.println("DEBUG: Result ready. Downloading to ");
+
+                s3.getObject(GetObjectRequest.builder().bucket(outBucket).key(outKey).build(), Paths.get(outputFileName));// downloads the object from s3 + saves the file to the computer
+                sqs.deleteQueue(DeleteQueueRequest.builder().queueUrl(returnQueueUrl).build());
                 break;
             }
             try {
@@ -160,6 +169,7 @@ public class LocalApplication {
             }
         }
         if (terminateMode) {// send a TERMINATE command to the manager
+            System.out.println("DEBUG: Sending TERMINATE signal.");
             sqs.sendMessage(SendMessageRequest.builder().queueUrl(queueUrl).messageBody("TERMINATE").build());
         }
     }
